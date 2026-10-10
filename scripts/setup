@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 00_setup.sh : create conda env, folders, download GENCODE reference, build Salmon index
+# Run once from the project root:  bash scripts/00_setup.sh
+set -euo pipefail
+
+GENCODE_REL=47          # must match 02_multiqc_tx2gene.sh; latest release: https://www.gencodegenes.org/human/
+THREADS=4
+
+# ---- 1. conda environment (see environment.yml) and activate it for the rest of this script ----
+conda env create -f environment.yml -y || echo "env already exists, continuing"
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate luad-rnaseq
+
+# ---- 2. folders ----
+mkdir -p ref metadata fastq trimmed quants qc results logs
+
+# ---- 3. GENCODE transcripts + annotation ----
+BASE="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_${GENCODE_REL}"
+wget -c -P ref "${BASE}/gencode.v${GENCODE_REL}.transcripts.fa.gz"
+wget -c -P ref "${BASE}/gencode.v${GENCODE_REL}.annotation.gtf.gz"
+
+# ---- 4. Salmon index (transcriptome only, no decoys, to save disk) ----
+salmon index \
+    -t ref/gencode.v${GENCODE_REL}.transcripts.fa.gz \
+    -i ref/salmon_index \
+    --gencode \
+    -p "${THREADS}"
+
+echo "Setup done. Next: conda activate luad-rnaseq, then bash scripts/01_fqdump_quant.sh"
