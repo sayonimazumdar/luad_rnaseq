@@ -1,0 +1,12 @@
+name: luad-rnaseq
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - sra-tools
+  - fastp
+  - salmon
+  - multiqc
+  - pigz
+  - entrez-direct
+  - python>=3.9
