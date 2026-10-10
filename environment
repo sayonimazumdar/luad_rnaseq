@@ -10,3 +10,20 @@ dependencies:
   - pigz
   - entrez-direct
   - python>=3.9
+name: luad-r
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base>=4.3
+  - bioconductor-deseq2
+  - bioconductor-tximport
+  - bioconductor-apeglm
+  - bioconductor-clusterprofiler
+  - bioconductor-enrichplot
+  - bioconductor-org.hs.eg.db
+  - r-msigdbr
+  - r-pheatmap
+  - r-ggplot2
+  - r-ggrepel
+  - r-dplyr
