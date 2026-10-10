@@ -1,0 +1,19 @@
+#!/usr/bin/env Rscript
+# 06_export_matrices.R : export gene x sample matrices (raw counts and TPM) from the Salmon outputs
+# Run from the project root:  Rscript scripts/06_export_matrices.R
+suppressPackageStartupMessages(library(tximport))
+dir.create("results", showWarnings = FALSE)
+runs  <- read.csv("metadata/samples.csv")
+ids   <- unique(paste(runs$patient, runs$condition, sep = "_"))
+files <- setNames(file.path("quants", ids, "quant.sf"), ids)
+t2g   <- read.delim("ref/tx2gene.tsv")
+txi   <- tximport(files, type = "salmon", tx2gene = t2g[, c("transcript_id", "gene_id")])
+nm    <- t2g[!duplicated(t2g$gene_id), c("gene_id", "gene_name")]
+write_mat <- function(x, f) {
+  d <- data.frame(gene_id = rownames(x), gene_name = nm$gene_name[match(rownames(x), nm$gene_id)],
+                  x, check.names = FALSE)
+  write.csv(d, f, row.names = FALSE)
+}
+write_mat(round(txi$counts), "results/raw_counts_matrix.csv")
+write_mat(txi$abundance,     "results/tpm_matrix.csv")
+message("Wrote results/raw_counts_matrix.csv and results/tpm_matrix.csv")
