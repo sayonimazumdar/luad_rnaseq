@@ -1,0 +1,132 @@
+#!/usr/bin/env Rscript
+# 04_deseq2.R : tximport + paired DESeq2 (design ~ patient + condition), QC plots, DE tables
+# Run from the project root after 01 and 02 have finished:  Rscript scripts/04_deseq2.R
+# Needs: quants/<patient>_<condition>/quant.sf  and  ref/tx2gene.tsv  and  metadata/samples.csv
+
+suppressPackageStartupMessages({
+  library(tximport)
+  library(DESeq2)
+  library(ggplot2)
+  library(ggrepel)
+  library(pheatmap)
+})
+
+dir.create("results/figures", recursive = TRUE, showWarnings = FALSE)
+
+# ---- 1. sample table (one row per patient x condition; runs were merged by the quant step) ----
+runs <- read.csv("metadata/samples.csv", stringsAsFactors = FALSE)
+samples <- unique(runs[, c("patient", "condition")])
+samples$sample    <- paste(samples$patient, samples$condition, sep = "_")
+samples$condition <- factor(samples$condition, levels = c("normal", "tumor"))  # normal = reference
+samples$patient   <- factor(samples$patient)
+rownames(samples) <- samples$sample
+
+files <- file.path("quants", samples$sample, "quant.sf")
+names(files) <- samples$sample
+missing <- files[!file.exists(files)]
+if (length(missing) > 0) stop("Missing quant.sf for: ", paste(names(missing), collapse = ", "))
+print(samples)
+
+# ---- 2. transcript -> gene ----
+tx2gene <- read.delim("ref/tx2gene.tsv", stringsAsFactors = FALSE)
+gene_names <- unique(tx2gene[, c("gene_id", "gene_name")])
+gene_names <- gene_names[!duplicated(gene_names$gene_id), ]
+
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene[, c("transcript_id", "gene_id")])
+
+# ---- 3. DESeq2 object, low-count filter ----
+dds <- DESeqDataSetFromTximport(txi, colData = samples, design = ~ patient + condition)
+keep <- rowSums(counts(dds) >= 10) >= 3
+dds <- dds[keep, ]
+message(sum(keep), " genes kept after filtering (>= 10 counts in >= 3 samples)")
+
+# ---- 4. sample QC: PCA + sample distances on variance-stabilised data ----
+vsd <- vst(dds, blind = FALSE)
+
+pca <- plotPCA(vsd, intgroup = c("condition", "patient"), returnData = TRUE)
+pv  <- round(100 * attr(pca, "percentVar"))
+p_pca <- ggplot(pca, aes(PC1, PC2, colour = condition, shape = patient)) +
+  geom_point(size = 4) +
+  geom_text_repel(aes(label = name), show.legend = FALSE) +
+  xlab(paste0("PC1: ", pv[1], "% variance")) +
+  ylab(paste0("PC2: ", pv[2], "% variance")) +
+  theme_bw()
+ggsave("results/figures/pca.png", p_pca, width = 6, height = 5, dpi = 300)
+
+ann_col <- as.data.frame(colData(vsd))[, c("condition", "patient")]
+pheatmap(as.matrix(dist(t(assay(vsd)))), annotation_col = ann_col,
+         filename = "results/figures/sample_distance_heatmap.png", width = 6, height = 5)
+
+# ---- 5. differential expression (tumor vs normal, adjusted for patient) ----
+dds <- DESeq(dds)
+coef_name <- "condition_tumor_vs_normal"
+stopifnot(coef_name %in% resultsNames(dds))
+
+res_raw <- results(dds, name = coef_name, alpha = 0.05)           # unshrunken: used for p-values and Wald stat
+res_shr <- lfcShrink(dds, coef = coef_name, type = "apeglm")       # shrunken log2FC: used for plots and cutoffs
+
+out <- data.frame(
+  gene_id    = rownames(res_raw),
+  baseMean   = res_raw$baseMean,
+  log2FC_raw = res_raw$log2FoldChange,
+  log2FC     = res_shr$log2FoldChange,
+  lfcSE      = res_shr$lfcSE,
+  stat       = res_raw$stat,
+  pvalue     = res_raw$pvalue,
+  padj       = res_raw$padj,
+  stringsAsFactors = FALSE
+)
+out$gene_name   <- gene_names$gene_name[match(out$gene_id, gene_names$gene_id)]
+out$significant <- !is.na(out$padj) & out$padj < 0.05 & abs(out$log2FC) > 1
+out <- out[order(out$padj), ]
+
+write.csv(out, "results/DE_results_all.csv", row.names = FALSE)
+write.csv(out[out$significant, ], "results/DE_significant.csv", row.names = FALSE)
+
+norm <- data.frame(gene_id = rownames(dds),
+                   gene_name = gene_names$gene_name[match(rownames(dds), gene_names$gene_id)],
+                   counts(dds, normalized = TRUE), check.names = FALSE)
+write.csv(norm, "results/normalized_counts.csv", row.names = FALSE)
+
+# ---- 6. plots ----
+# MA plot
+png("results/figures/ma_plot.png", width = 1800, height = 1500, res = 300)
+plotMA(res_shr, ylim = c(-5, 5), main = "Tumor vs normal (shrunken log2FC)")
+dev.off()
+
+# volcano plot
+vd <- out[!is.na(out$padj), ]
+vd$neglogp <- -log10(pmax(vd$padj, 1e-300))
+vd$group <- ifelse(vd$significant & vd$log2FC > 0, "Up in tumor",
+            ifelse(vd$significant & vd$log2FC < 0, "Down in tumor", "Not significant"))
+top <- head(vd[vd$significant, ], 15)
+p_vol <- ggplot(vd, aes(log2FC, neglogp, colour = group)) +
+  geom_point(alpha = 0.6, size = 1) +
+  scale_colour_manual(values = c("Up in tumor" = "#d95f02", "Down in tumor" = "#1b9e77",
+                                 "Not significant" = "grey70")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_text_repel(data = top, aes(label = gene_name), size = 3, colour = "black", max.overlaps = Inf) +
+  labs(x = "log2 fold change (tumor / normal)", y = "-log10 adjusted p-value", colour = NULL) +
+  theme_bw()
+ggsave("results/figures/volcano.png", p_vol, width = 7, height = 6, dpi = 300)
+
+# heatmap of the 50 genes with the smallest adjusted p-values
+topg <- head(out$gene_id[!is.na(out$padj)], 50)
+mat  <- assay(vsd)[topg, , drop = FALSE]
+mat  <- mat - rowMeans(mat)
+gn   <- gene_names$gene_name[match(topg, gene_names$gene_id)]
+rownames(mat) <- make.unique(ifelse(is.na(gn) | gn == "", topg, gn))
+pheatmap(mat, annotation_col = ann_col, fontsize_row = 6,
+         filename = "results/figures/top50_heatmap.png", width = 6, height = 9)
+
+# ---- 7. summary and sanity check on known lung-cancer markers ----
+cat("\nSignificant genes (padj < 0.05 and |log2FC| > 1):\n")
+cat("  up in tumor:  ", sum(out$significant & out$log2FC > 0, na.rm = TRUE), "\n")
+cat("  down in tumor:", sum(out$significant & out$log2FC < 0, na.rm = TRUE), "\n")
+cat("\nMarker genes (expect MKI67/TOP2A/FOXM1 up, AGER/SFTPC down in tumor):\n")
+print(out[out$gene_name %in% c("MKI67", "TOP2A", "FOXM1", "AGER", "SFTPC"),
+          c("gene_name", "log2FC", "padj")], row.names = FALSE)
+
+writeLines(capture.output(sessionInfo()), "results/sessionInfo_deseq2.txt")
+message("Done. Tables in results/, figures in results/figures/")
