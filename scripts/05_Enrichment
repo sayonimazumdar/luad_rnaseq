@@ -1,0 +1,90 @@
+#!/usr/bin/env Rscript
+# 05_enrichment.R : GO and KEGG over-representation + Hallmark GSEA from the DESeq2 results
+# Run after 04_deseq2.R:  Rscript scripts/05_enrichment.R
+# KEGG needs internet access. Hallmark sets need the msigdbr package (see README note if it errors).
+
+suppressPackageStartupMessages({
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+  library(enrichplot)
+  library(msigdbr)
+  library(ggplot2)
+  library(dplyr)
+})
+
+dir.create("results/enrichment", recursive = TRUE, showWarnings = FALSE)
+
+# ---- 1. read DE results and map Ensembl -> Entrez ----
+res <- read.csv("results/DE_results_all.csv", stringsAsFactors = FALSE)
+res$ensembl <- sub("\\..*$", "", res$gene_id)          # drop version suffix (and _PAR_Y tail)
+
+map <- bitr(unique(res$ensembl), fromType = "ENSEMBL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+map <- map[!duplicated(map$ENSEMBL), ]
+res <- merge(res, map, by.x = "ensembl", by.y = "ENSEMBL")
+res <- res[!duplicated(res$ENTREZID), ]
+message(nrow(res), " genes with Entrez IDs")
+
+universe <- unique(res$ENTREZID)
+up   <- unique(res$ENTREZID[res$significant & res$log2FC > 0])
+down <- unique(res$ENTREZID[res$significant & res$log2FC < 0])
+message(length(up), " up and ", length(down), " down significant genes")
+
+save_result <- function(x, name) {
+  df <- as.data.frame(x)
+  if (nrow(df) == 0) { message("No significant terms for ", name); return(invisible(FALSE)) }
+  write.csv(df, file.path("results/enrichment", paste0(name, ".csv")), row.names = FALSE)
+  p <- dotplot(x, showCategory = 15) + ggtitle(name)
+  ggsave(file.path("results/enrichment", paste0(name, ".png")), p, width = 8, height = 7, dpi = 300)
+  invisible(TRUE)
+}
+
+# ---- 2. GO biological process (up and down separately) ----
+for (set in c("up", "down")) {
+  genes <- get(set)
+  if (length(genes) < 5) { message("Too few ", set, " genes for GO"); next }
+  ego <- enrichGO(gene = genes, universe = universe, OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                  ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.2,
+                  readable = TRUE)
+  if (!is.null(ego)) save_result(ego, paste0("GO_BP_", set))
+}
+
+# ---- 3. KEGG (needs internet) ----
+for (set in c("up", "down")) {
+  genes <- get(set)
+  if (length(genes) < 5) { message("Too few ", set, " genes for KEGG"); next }
+  ek <- tryCatch(
+    enrichKEGG(gene = genes, universe = universe, organism = "hsa", pvalueCutoff = 0.05),
+    error = function(e) { message("KEGG failed (", conditionMessage(e), ")"); NULL })
+  if (!is.null(ek)) save_result(ek, paste0("KEGG_", set))
+}
+
+# ---- 4. GSEA on MSigDB Hallmark sets, ranked by the Wald statistic ----
+msig <- tryCatch(
+  msigdbr(species = "Homo sapiens", collection = "H"),
+  error = function(e) tryCatch(
+    msigdbr(species = "Homo sapiens", category = "H"),
+    error = function(e2) stop("msigdbr failed: ", conditionMessage(e2),
+      "\nIf it asks for 'msigdbdf', install it with:\n",
+      "  install.packages('msigdbdf', repos = c('https://igordot.r-universe.dev', getOption('repos')))")))
+gene_col <- if ("ncbi_gene" %in% names(msig)) "ncbi_gene" else "entrez_gene"
+t2g <- data.frame(gs_name = msig$gs_name, gene = as.character(msig[[gene_col]])) %>% distinct()
+
+rk <- res[!is.na(res$stat), ]
+gene_list <- sort(setNames(rk$stat, rk$ENTREZID), decreasing = TRUE)
+
+gsea <- GSEA(gene_list, TERM2GENE = t2g, pvalueCutoff = 0.25, minGSSize = 15,
+             maxGSSize = 500, eps = 0, seed = TRUE, verbose = FALSE)
+if (!is.null(gsea) && nrow(as.data.frame(gsea)) > 0) {
+  write.csv(as.data.frame(gsea), "results/enrichment/GSEA_hallmark.csv", row.names = FALSE)
+  ggsave("results/enrichment/GSEA_hallmark_dotplot.png",
+         dotplot(gsea, showCategory = 20, split = ".sign") + facet_grid(. ~ .sign),
+         width = 9, height = 8, dpi = 300)
+  n <- min(3, nrow(as.data.frame(gsea)))
+  ggsave("results/enrichment/GSEA_hallmark_top_curves.png",
+         gseaplot2(gsea, geneSetID = seq_len(n)), width = 8, height = 6, dpi = 300)
+} else {
+  message("No Hallmark sets reached the GSEA cutoff (pvalueCutoff 0.25)")
+}
+
+writeLines(capture.output(sessionInfo()), "results/sessionInfo_enrichment.txt")
+message("Done. Results in results/enrichment/")
