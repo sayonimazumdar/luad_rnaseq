@@ -31,7 +31,7 @@ Pairing each tumor with its own normal removes most between-patient variation (D
 - Down in tumor: alveolar/endothelial genes (*AGER*, *CLDN5*, *CAV1*, *CLDN18*); angiogenesis and vasculature GO terms.
 - Up in tumor: *CEACAM5/6*, *AGR2*, mucins, *TOP2A*; GO immunoglobulin-mediated immune response; Hallmark E2F targets (NES +2.48) and glycolysis (NES +2.15).
 - The top genes changed in the same direction in all three patients.
-- Full write-up: [`docs/LUAD_RNAseq_Report.docx`](docs/LUAD_RNAseq_Report.docx). Figures are in `results/figures/` and `results/enrichment/`.
+  
 
 ## Repository layout
 ```
