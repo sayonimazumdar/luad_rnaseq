@@ -1,0 +1,17 @@
+# large / regenerable data
+sra/
+fastq/
+trimmed/
+ref/
+quants/
+test/
+logs/
+nohup.out
+*.sra
+*.fastq
+*.fastq.gz
+# R / editor
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
