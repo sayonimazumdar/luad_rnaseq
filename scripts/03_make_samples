@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""03_make_samples.py : build metadata/samples.csv for GSE37764 (6 LUAD tumor/normal pairs, RNA-seq)
+
+Usage:
+    esearch -db sra -query PRJNA163279 | efetch -format runinfo > metadata/runinfo.csv
+    python scripts/03_make_samples.py metadata/runinfo.csv metadata/samples.csv
+"""
+import csv, sys, collections
+
+# GEO sample (GSM) -> (patient, condition) for the RNA-seq samples listed on the GSE37764 page
+GSM = {
+    "GSM927308": ("P1", "normal"), "GSM927309": ("P1", "tumor"),
+    "GSM927310": ("P3", "normal"), "GSM927311": ("P3", "tumor"),
+    "GSM927312": ("P4", "normal"), "GSM927313": ("P4", "tumor"),
+    "GSM927314": ("P5", "normal"), "GSM927315": ("P5", "tumor"),
+    "GSM927316": ("P6", "normal"), "GSM927317": ("P6", "tumor"),
+    "GSM927318": ("P8", "normal"), "GSM927319": ("P8", "tumor"),
+}
+# To use only 5 pairs, remove one patient here (e.g. {"P8"}):
+DROP_PATIENTS = {"P5", "P6", "P8"}   # this project uses patients P1, P3, P4 only
+
+runinfo, out = sys.argv[1], sys.argv[2]
+rows, per_gsm = [], collections.Counter()
+with open(runinfo, newline="") as fh:
+    for r in csv.DictReader(fh):
+        gsm = next((v for v in r.values() if v in GSM), None)   # find the GSM in any column
+        if gsm is None:
+            continue
+        patient, cond = GSM[gsm]
+        if patient in DROP_PATIENTS:
+            continue
+        if r.get("LibraryStrategy", "RNA-Seq") != "RNA-Seq":
+            continue
+        layout = r.get("LibraryLayout", "PAIRED").upper()
+        rows.append((r["Run"], patient, cond, layout, gsm))
+        per_gsm[gsm] += 1
+
+rows.sort(key=lambda x: (x[1], x[2]))
+with open(out, "w") as fh:
+    fh.write("run,patient,condition,layout\n")
+    for run, patient, cond, layout, _ in rows:
+        fh.write(f"{run},{patient},{cond},{layout}\n")
+
+print(f"wrote {len(rows)} runs for {len(per_gsm)} samples -> {out}")
+multi = [g for g, c in per_gsm.items() if c > 1]
+if multi:
+    print("WARNING: more than one run per sample for:", ", ".join(multi),
+          "\n         Quantify each run, then sum or merge them per sample before DESeq2.")
+missing = [g for g in GSM if g not in per_gsm and GSM[g][0] not in DROP_PATIENTS]
+if missing:
+    print("WARNING: no run found for:", ", ".join(missing))
